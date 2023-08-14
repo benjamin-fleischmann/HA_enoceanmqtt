@@ -4335,9 +4335,10 @@
                    {"COM":"1","TIM":"0","LCK":"0","DEL":"0","SW":"1","send":"clear"}
                  command_off_template: >-
                    {"COM":"1","TIM":"0","LCK":"0","DEL":"0","SW":"0","send":"clear"}
-            - component: "button"
-              name: "pairing"
+            - component: "light"
+              name: "light_COM2"
               config:
+                 schema: "template"
                  command_topic: "req"
                  payload_press: >-
                    {"send":"clear"}
@@ -4545,6 +4546,492 @@
                  value_template: "{{ value_json.CO }}"
                  payload_on: "0"
                  payload_off: "1"
+
+# Mapping of Eltako devices using non-standard or universal EEPs to Home Assistant Entities
+eltako:
+   fhd60sb:
+      device_config:
+         - rorg: "0xA5"
+           func: "0x06"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: sensor
+           name: "lux"
+           config:
+              state_topic: "a5"
+              value_template: >-
+                {% if value_json._RAW_DATA_.split(":")[1]=="00" %}
+                  {{ value_json._RAW_DATA_.split(":")[0]|int(base=16) }}
+                {% else %}
+                  {{ value_json.ILL2 | round(1) }}
+                {% endif %}
+              device_class: "illuminance"
+              state_class: "measurement"
+              unit_of_measurement: "lx"
+   fsb14: &fsb14
+      device_config:
+         - rorg: "0xA5"
+           func: "0x3F"
+           type: "0x7F"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+         - rorg: "0xF6"
+           func: "0x02"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: "button"
+           name: "pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"FF:F8:0D:80","send":"clear+learn+raw_data"}
+              icon: "mdi:connection"
+         - component: "number"
+           name: "shut_time"
+           config:
+              command_topic: "a5/__trash"
+              min: "1"
+              max: "255"
+              step: "0.1"
+              mode: "box"
+              unit_of_measurement: "s"
+              icon: "mdi:sort-clock-ascending-outline"
+         - component: "cover"
+           name: "cover"
+           config:
+              command_topic: "a5/req"
+              payload_open: >-
+                {"DB3":"0","DB2":"0","DB1":"1","DB0":"8","send":"clear"}
+              payload_close: >-
+                {"DB3":"0","DB2":"0","DB1":"2","DB0":"8","send":"clear"}
+              payload_stop: >-
+                {"DB3":"0","DB2":"0","DB1":"0","DB0":"8","send":"clear"}
+              state_topic: "+"
+              state_stopped: "0"
+              state_opening: "01"
+              state_closing: "02"
+              state_open: "70"
+              state_closed: "50"
+              value_template: >-
+                {% if value_json._RAW_DATA_.split(":")|length == 2 %}
+                  {{ value_json._RAW_DATA_.split(":")[0] }}
+                {% else %}
+                  {{ states(entity_id)|int(default=0) }}
+                {% endif %}
+              set_position_topic: "a5/req"
+              set_position_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('shut_time$',ignorecase=True) %}
+                    {% set ns.shut_time_sec = states(entity)|float(default=255.0) %}
+                  {% endif %}
+                {% endfor %}
+                {% set cur_pos = state_attr(entity_id,"current_position")|int(default=0) %}
+                {% set step = position - cur_pos %}
+                {% set DB1 = iif(step < 0,2,1) %}
+                {% set drive_time_100ms = (((step|abs)*ns.shut_time_sec/100)*10)|int %}
+                {% set shut_time_msb = (drive_time_100ms/256)|int %}
+                {% set shut_time_lsb = (drive_time_100ms%256)|int %}
+                {"DB3":"{{shut_time_msb}}","DB2":"{{shut_time_lsb}}","DB1":"{{DB1}}","DB0":"10","send":"clear"}
+              position_topic: "+"
+              position_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('shut_time$',ignorecase=True) %}
+                    {% set ns.shut_time_sec = states(entity)|float(default=255) %}
+                  {% endif %}
+                {% endfor %}
+                {% if value_json._RAW_DATA_.split(":")|length == 2 %}
+                  {% if value_json._RAW_DATA_.split(":")[0]=="70" %}{{position_open}}
+                  {% elif value_json._RAW_DATA_.split(":")[0]=="50" %}{{position_closed}}
+                  {% endif %}
+                {% elif value_json._RAW_DATA_.split(":")|length == 5 %}
+                  {% set drive_time_sec = (value_json.DB3*256+value_json.DB2)|int(default=0)/10 %}
+                  {% set step = drive_time_sec*100/ns.shut_time_sec %}
+                  {% set dir = iif(value_json.DB1==1,1,-1) %}
+                  {% set cur_pos = state_attr(entity_id,"current_position")|int(default=0) %}
+                  {{max(0, min((cur_pos+step*dir)|int, 100))}}
+                {% else %}
+                  {{ states(entity_id)|int(default=0) }}
+                {% endif %}
+         - component: binary_sensor
+           name: "end_top"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="70","on","off") }}
+         - component: binary_sensor
+           name: "end_bottom"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="50","on","off") }}
+         - component: binary_sensor
+           name: "start_up"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="01","on","off") }}
+         - component: binary_sensor
+           name: "start_down"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="02","on","off") }}
+   fsb61: *fsb14
+   fj62: &fj62
+      device_config:
+         - rorg: "0xA5"
+           func: "0x3F"
+           type: "0x7F"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+         - rorg: "0xF6"
+           func: "0x02"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: "button"
+           name: "pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"FF:F8:0D:80","send":"clear+learn+raw_data"}
+              icon: "mdi:connection"
+         - component: "button"
+           name: "unlock_pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"00:00:00:28","send":"clear+raw_data"}
+              icon: "mdi:connection"
+         - component: "number"
+           name: "shut_time"
+           config:
+              command_topic: "a5/__trash"
+              min: "1"
+              max: "255"
+              step: "0.1"
+              mode: "box"
+              unit_of_measurement: "s"
+              icon: "mdi:sort-clock-ascending-outline"
+         - component: "cover"
+           name: "cover"
+           config:
+              command_topic: "a5/req"
+              payload_open: >-
+                {"DB3":"0","DB2":"0","DB1":"1","DB0":"8","send":"clear"}
+              payload_close: >-
+                {"DB3":"0","DB2":"0","DB1":"2","DB0":"8","send":"clear"}
+              payload_stop: >-
+                {"DB3":"0","DB2":"0","DB1":"0","DB0":"8","send":"clear"}
+              state_topic: "+"
+              state_stopped: "0"
+              state_opening: "01"
+              state_closing: "02"
+              state_open: "70"
+              state_closed: "50"
+              value_template: >-
+                {% if value_json._RAW_DATA_.split(":")|length == 2 %}
+                  {{ value_json._RAW_DATA_.split(":")[0] }}
+                {% else %}
+                  {{ states(entity_id)|int(default=0) }}
+                {% endif %}
+              set_position_topic: "a5/req"
+              set_position_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('shut_time$',ignorecase=True) %}
+                    {% set ns.shut_time_sec = states(entity)|float(default=255.0) %}
+                  {% endif %}
+                {% endfor %}
+                {% set cur_pos = state_attr(entity_id,"current_position")|int(default=0) %}
+                {% set step = position - cur_pos %}
+                {% set DB1 = iif(step < 0,2,1) %}
+                {% set drive_time_100ms = (((step|abs)*ns.shut_time_sec/100)*10)|int %}
+                {% set shut_time_msb = (drive_time_100ms/256)|int %}
+                {% set shut_time_lsb = (drive_time_100ms%256)|int %}
+                {"DB3":"{{shut_time_msb}}","DB2":"{{shut_time_lsb}}","DB1":"{{DB1}}","DB0":"10","send":"clear"}
+              position_topic: "+"
+              position_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('shut_time$',ignorecase=True) %}
+                    {% set ns.shut_time_sec = states(entity)|float(default=255) %}
+                  {% endif %}
+                {% endfor %}
+                {% if value_json._RAW_DATA_.split(":")|length == 2 %}
+                  {% if value_json._RAW_DATA_.split(":")[0]=="70" %}{{position_open}}
+                  {% elif value_json._RAW_DATA_.split(":")[0]=="50" %}{{position_closed}}
+                  {% endif %}
+                {% elif value_json._RAW_DATA_.split(":")|length == 5 %}
+                  {% set drive_time_sec = (value_json.DB3*256+value_json.DB2)|int(default=0)/10 %}
+                  {% set step = drive_time_sec*100/ns.shut_time_sec %}
+                  {% set dir = iif(value_json.DB1==1,1,-1) %}
+                  {% set cur_pos = state_attr(entity_id,"current_position")|int(default=0) %}
+                  {{max(0, min((cur_pos+step*dir)|int, 100))}}
+                {% else %}
+                  {{ states(entity_id)|int(default=0) }}
+                {% endif %}
+         - component: binary_sensor
+           name: "end_top"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="70","on","off") }}
+         - component: binary_sensor
+           name: "end_bottom"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="50","on","off") }}
+         - component: binary_sensor
+           name: "start_up"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="01","on","off") }}
+         - component: binary_sensor
+           name: "start_down"
+           config:
+              state_topic: "f6"
+              payload_on: "on"
+              payload_off: "off"
+              value_template: >-
+                {{ iif(value_json._RAW_DATA_.split(":")[0]=="02","on","off") }}
+   tf61j: *fj62
+   fsr14: &fsr14
+      device_config:
+         - rorg: "0xA5"
+           func: "0x38"
+           type: "0x08"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+         - rorg: "0xF6"
+           func: "0x02"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: "button"
+           name: "pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"E0:40:0D:80","send":"clear+learn+raw_data"}
+              icon: "mdi:connection"
+         - component: "switch"
+           name: "switch"
+           config:
+              command_topic: "a5/req"
+              payload_on: >-
+                {"raw_data":"01:00:00:09","send":"clear+raw_data"}
+              payload_off: >-
+                {"raw_data":"01:00:00:08","send":"clear+raw_data"}
+              state_topic: "f6"
+              value_template: >-
+                {% if value_json._RAW_DATA_.split(":")[0]=="70" %}ON{% elif value_json._RAW_DATA_.split(":")[0]=="50" %}OFF{% endif %}
+              enabled_by_default: "false"
+              device_class: "outlet"
+         - component: "light"
+           name: "light"
+           config:
+              schema: "template"
+              command_topic: "a5/req"
+              command_on_template: >-
+                {"raw_data":"01:00:00:09","send":"clear+raw_data"}
+              command_off_template: >-
+                {"raw_data":"01:00:00:08","send":"clear+raw_data"}
+              state_topic: "f6"
+              state_template: >-
+                {% if value_json._RAW_DATA_.split(":")[0]=="70" %}on{% elif value_json._RAW_DATA_.split(":")[0]=="50" %}off{% endif %}
+   fsr61: *fsr14
+   tf61l: &tf61l
+      device_config:
+         - rorg: "0xA5"
+           func: "0x38"
+           type: "0x08"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+         - rorg: "0xF6"
+           func: "0x02"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: "button"
+           name: "pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"E0:40:0D:80","send":"clear+learn+raw_data"}
+              icon: "mdi:connection"
+         - component: "button"
+           name: "unlock_pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"00:00:00:28","send":"clear+raw_data"}
+              icon: "mdi:connection"
+         - component: "button"
+           name: "enable_feedback"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"00:00:00:08","send":"clear+raw_data"}
+              icon: "mdi:connection"
+         - component: "switch"
+           name: "switch"
+           config:
+              command_topic: "a5/req"
+              payload_on: >-
+                {"raw_data":"01:00:00:09","send":"clear+raw_data"}
+              payload_off: >-
+                {"raw_data":"01:00:00:08","send":"clear+raw_data"}
+              state_topic: "f6"
+              value_template: >-
+                {% if value_json._RAW_DATA_.split(":")[0]=="70" %}ON{% elif value_json._RAW_DATA_.split(":")[0]=="50" %}OFF{% endif %}
+              enabled_by_default: "false"
+              device_class: "outlet"
+         - component: "light"
+           name: "light"
+           config:
+              schema: "template"
+              command_topic: "a5/req"
+              command_on_template: >-
+                {"raw_data":"01:00:00:09","send":"clear+raw_data"}
+              command_off_template: >-
+                {"raw_data":"01:00:00:08","send":"clear+raw_data"}
+              state_topic: "f6"
+              state_template: >-
+                {% if value_json._RAW_DATA_.split(":")[0]=="70" %}on{% elif value_json._RAW_DATA_.split(":")[0]=="50" %}off{% endif %}
+   fud14: &fud14
+      device_config:
+         - rorg: "0xA5"
+           func: "0x38"
+           type: "0x08"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+         - rorg: "0xF6"
+           func: "0x02"
+           type: "0x01"
+           command: ""
+           channel: ""
+           log_learn: ""
+           direction: ""
+           answer: ""
+      entities:
+         - component: "button"
+           name: "pairing"
+           config:
+              command_topic: "a5/req"
+              payload_press: >-
+                {"raw_data":"E0:40:0D:80","send":"clear+learn+raw_data"}
+              icon: "mdi:connection"
+         - component: "number"
+           name: "speed"
+           config:
+              command_topic: "a5/__trash"
+              min: "0"
+              max: "255"
+              step: "1"
+              mode: "slider"
+              icon: "mdi:speedometer"
+         - component: "light"
+           name: "light"
+           config:
+              schema: "template"
+              command_topic: "a5/req"
+              command_on_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('speed$',ignorecase=True) %}
+                    {% set ns.dim_speed = '%02x' % (states(entity)|int(default=0)) %}
+                  {% endif %}
+                {% endfor %}
+                {% if transition is defined %}
+                  {% set ns.dim_speed = '%02x' % (transition|int(default=0)) %}
+                {% endif %}
+                {% set ns.dim_val = "FF" %}
+                {% if brightness is defined %}
+                  {% set ns.dim_val = '%02x' % (((brightness|int(default=255))*100/255)|int) %}
+                {% endif %}
+                {"raw_data":"02:{{ns.dim_val}}:{{ns.dim_speed}}:09","send":"clear+raw_data"}
+              command_off_template: >-
+                {% set ns = namespace() %}
+                {% for entity in device_entities(device_id(entity_id)) %}
+                  {% if entity is search('speed$',ignorecase=True) %}
+                    {% set ns.dim_speed = '%02x' % (states(entity)|int(default=0)) %}
+                  {% endif %}
+                {% endfor %}
+                {% if transition is defined %}
+                  {% set ns.dim_speed = '%02x' % (transition|int(default=0)) %}
+                {% endif %}
+                {"raw_data":"02:00:{{ns.dim_speed}}:08","send":"clear+raw_data"}
+              state_topic: "+"
+              state_template: >-
+                {% if value_json._RAW_DATA_.split(":")|length == 2 %}
+                  {% if value_json._RAW_DATA_.split(":")[0]=="70" %}on{% elif value_json._RAW_DATA_.split(":")[0]=="50" %}off{% endif %}
+                {% elif value_json._RAW_DATA_.split(":")|length == 5 %}
+                  {% if value_json._RAW_DATA_.split(":")[3]=="09" %}on{% elif value_json._RAW_DATA_.split(":")[3]=="08" %}off{% endif %}
+                {% endif %}
+              brightness_template: >-
+                {% if value_json._RAW_DATA_.split(":")|length == 5 %}
+                  {{ (value_json._RAW_DATA_.split(":")[1]|int(default=0,base=16)*255/100)|int }}
+                {% else %}
+                  {{ states(entity_id)|int(default=0) }}
+                {% endif %}
+   fud61: *fud14
+   fdg14: *fud14
 
 # Below are mappings common to all EEPs
 common:
